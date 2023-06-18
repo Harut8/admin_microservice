@@ -1,7 +1,9 @@
+import uuid
+
 from auth.auth import decode_token
 from uuid import UUID
 from repository.user_db_manager.user_db_manager import UserDbManager
-from models.user_model.user_model import UserInfo, AccountRegModel, AccountViewModel
+from models.user_model.user_model import UserInfo, PaymentListEnum, PaymentListView
 from typing import Union
 
 from service.redis_client.redis_client import RedisClient
@@ -32,112 +34,99 @@ class UserServiceManager(UserServiceInterface):
             raise e
 
     @staticmethod
-    async def post_acc_into_temp_db(add_user_data: AccountRegModel) -> Union[bool, None]:
-        try:
-            _user_add_state = await UserDbManager.post_acc_into_temp_db(item=add_user_data)
-            if _user_add_state:
-                id_for_link: Union[str, UUID, Record] = _user_add_state["temp_id"]
-                id_for_link = str(id_for_link["t_id"])
-                id_for_link_generated_JWTEncoded = create_token_for_email_verify(id_for_link)
-                generated_link = generate_url_for_email_verify(id_=id_for_link_generated_JWTEncoded)
-                send_email_verify_link.delay(_user_add_state["temp_email"], generated_link)
-                return True
+    async def get_companies(admin_id, search):
+        _dillers = await UserDbManager.get_dillers()
+        _companies = await UserDbManager.get_companies(admin_login=admin_id, search=search)
+        return_data = {i["d_id"]: [] for i in _dillers}
+        if _companies and _dillers:
+            for i in _companies:
+                return_data[i["c_diller_id"]] += [i.items()]
+            for i in _dillers:
+                return_data[i["d_name"]] = return_data.pop(i["d_id"])
+        elif _dillers:
+            return_data = {i["d_name"]: [] for i in _dillers}
+        else:
             return
-        except Exception as e:
-            raise e
+        return return_data
 
     @staticmethod
-    async def verify_registration_with_email(token_verify):
-        """
-        -1 EMPTY USER ID
-        -2 WRONG VERIFY ID
-        :param token_verify:
-        :return:
-        """
-        try:
-            temp_payload = await decode_token(token_verify)
-            temp_id = temp_payload['sub']
-            if not temp_id:
-                return -1
-            _verify_state = await UserDbManager.verify_registration_with_email(temp_id=temp_id)
-            if not _verify_state:
-                return -2
-            _info = _verify_state["del_tmp_add_company"]
-            _unique_id = _info["c_unique_id"]
-            _c_email = _info["c_email"]
+    async def get_company_and_tarif_by_id(company_id):
+        _company_and_tarif_ = await UserDbManager.get_company_and_tarif_by_id(company_id)
+        _devices = await UserDbManager.get_used_device_count(company_id)
+        if _company_and_tarif_ or _devices:
+            return {"tarifes": _company_and_tarif_, "used_device": _devices}
+
+    @staticmethod
+    async def block_tarif_for_company(order_id, admin_login):
+        _is_blocked = await UserDbManager.block_tarif_for_company(order_id, admin_login)
+        if _is_blocked:
             return True
-        except Exception as e:
-            print(e)
-            return
+        return
 
     @staticmethod
-    async def get_user_info(language, user_uuid):
-        try:
-            _user_info = await UserDbManager.get_user_info(language_dict[language],user_uuid)
-            if _user_info is not None:
-                return AccountViewModel(
-                    c_id=_user_info["c_id"],
-                    c_unique_id=_user_info["c_unique_id"],
-                    c_name=_user_info["c_name"],
-                    c_contact_name=_user_info["c_contact_name"],
-                    c_phone=_user_info["c_phone"],
-                    c_email=_user_info["c_email"],
-                    tarif_list=_user_info["tarif_list"],
+    async def enable_tarif_for_company(order_id, admin_login):
+        _is_enable = await UserDbManager.enable_tarif_for_company(order_id, admin_login)
+        if _is_enable:
+            return True
+        return
+
+    @classmethod
+    def __create_list_of_payment(cls, info_):
+        return [
+            PaymentListView(
+                order_id=i["order_id"],
+                order_summ=i["order_summ"],
+                cass_stantion_count=i["cass_stantion_count"],
+                mobile_cass_count=i["mobile_cass_count"],
+                mobile_manager_count=i["mobile_manager_count"],
+                web_manager_count=i["web_manager_count"],
+                order_curr_type=i["order_curr_type"],
+                order_date=i["order_date"],
+                order_ending=i["order_ending"],
+                c_name=i["c_name"],
+                c_contact_name=i["c_contact_name"],
+                c_phone=i["c_phone"],
+                c_email=i["c_email"],
+                c_inn=i["c_inn"],
+                c_address=i["c_address"],
+            )
+            for i in info_
+        ]
+
+    @staticmethod
+    async def get_payment_list(type_of_payment: PaymentListEnum):
+        match type_of_payment:
+            case type_of_payment.type_transfer_buyed:
+                info_ = await UserDbManager.get_payments_for_view(
+                    order_state=(True, False),
+                    order_curr_type=(0,)
                 )
-            return
-        except Exception as e:
-            print(e)
-            return
-
-    @staticmethod
-    async def get_app_links():
-        try:
-            __app = ("cass_stantion_name",
-                 "mobile_cass_name",
-                 "web_manager_name",
-                 "mobile_manager_name",
-                 )
-
-            _links = await UserDbManager.get_app_links()
-            if _links is not None:
-                return {i: j["product_link"] for i, j in zip(__app, _links)}
-            return
-        except Exception as e:
-            print(e)
-            return
-
-    @staticmethod
-    async def send_recovery_code(receiver_info):
-        try:
-            import random
-            _message = "".join([str(random.randint(0, 9)) for i in range(9)])
-            if RedisClient.set_var(receiver_info, _message, 600):
-                send_account_recovery_code.delay(receiver_email=receiver_info, message=_message)
-                return True
-        except Exception as e:
-            print(e)
-            return
-
-    @staticmethod
-    async def check_recovery_code(receiver_email, verify_code):
-        try:
-            _code = RedisClient.get_var(receiver_email).decode('utf-8')
-            if _code == str(verify_code):
-                return True
-            return
-        except Exception as e:
-            print(e)
-            return
-
-    @staticmethod
-    async def update_password(_email, _password):
-        try:
-            from auth.auth import get_hashed_password
-            _password = get_hashed_password(_password)
-            _state = await UserDbManager.update_password(_email, _password)
-            if not _state:
+                if info_ is not None:
+                    return UserServiceManager.__create_list_of_payment(info_)
                 return
-            return True
-        except Exception as e:
-            print(e)
-            return
+            case type_of_payment.type_card_buyed:
+                info_ = await UserDbManager.get_payments_for_view(
+                    order_state=(True, False),
+                    order_curr_type=(1,)
+                )
+                if info_ is not None:
+                    return UserServiceManager.__create_list_of_payment(info_)
+                return
+            case type_of_payment.type_in_order:
+                info_ = await UserDbManager.get_payments_for_view(
+                    order_state=(False,),
+                    order_curr_type=(0, 1)
+                )
+                if info_ is not None:
+                    return UserServiceManager.__create_list_of_payment(info_)
+                return
+            case type_of_payment.type_all:
+                info_ = await UserDbManager.get_payments_for_view(
+                    order_state=(True, False),
+                    order_curr_type=(0, 1, 2)
+                )
+                if info_ is not None:
+                    return UserServiceManager.__create_list_of_payment(info_)
+                return
+            case _:
+                return

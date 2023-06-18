@@ -8,8 +8,8 @@ from pydantic import BaseModel
 
 class UserView(BaseModel):
     """DATA CLASS FOR CREATING MODEL IN GET_CURRENT_USER FUNCTION"""
-    c_id: Union[str, uuid.UUID]
-    c_email: str
+    admin_id: Union[str, uuid.UUID]
+    admin_login: str
 
 
 class PayloadToken(BaseModel):

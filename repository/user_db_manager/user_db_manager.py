@@ -2,7 +2,6 @@ import uuid
 from typing import Union
 
 from auth.auth import get_hashed_password
-from models.user_model.user_model import AccountRegModel
 from repository.core.core import DbConnection, fetch_row_transaction, insert_row_transaction, fetch_transaction, \
     execute_delete_query
 from dataclasses import dataclass
@@ -16,165 +15,150 @@ class UserDbManager(UserDbInterface):
     @staticmethod
     async def get_user_from_db(*, username) -> Record:
         _user_info = await fetch_row_transaction(
-            """select c_id, c_pass, c_email from company where c_email = $1""",
+            """select admin_id, admin_password, admin_login from admin_table where admin_login = $1""",
             username)
         return _user_info
 
     @staticmethod
     async def get_user_from_db_by_uuid(uuid):
         _user_info = await fetch_row_transaction(
-            """select c_id, c_email from company where c_id = $1""",
+            """select admin_id, admin_login from admin_table where admin_id = $1""",
             uuid)
         return _user_info
 
     @staticmethod
-    async def post_acc_into_temp_db(*, item: AccountRegModel) -> Union[dict[str, uuid.UUID | str], None, bool]:
-        """ INSERT acc INFO INTO TEMP DATABASE"""
+    async def get_dillers():
         try:
-            #  get from registered users where username and phone number
-            _check_acc_in_temp = await fetch_row_transaction(
-                """ SELECT c_name, c_email, c_phone FROM company
-                    WHERE c_name = $1
-                    or 
-                    c_email = $2
-                    or 
-                    c_phone = $3
-                """,
-                item.acc_org_name,
-                item.acc_email,
-                item.acc_phone
+            _dillers = await fetch_transaction(
+                """select d.d_name, d.d_id from diller d order by d.d_id;"""
             )
-            if _check_acc_in_temp:  # there is a company with these parameters
-                return False
-
-            hash_pass = get_hashed_password(item.acc_pass)
-            await execute_delete_query(
-                """DELETE FROM temp_company
-                   WHERE t_c_name = $1 
-                   or t_c_email = $2 
-                   or t_c_phone = $3""",
-                item.acc_org_name,
-                item.acc_email,
-                item.acc_phone)
-            _temp_id = await fetch_row_transaction(f"""
-                INSERT
-            INTO
-            temp_company(
-                t_c_name,
-                t_c_country,
-                t_c_pass,
-                t_c_contact_name,
-                t_c_phone,
-                t_c_email,
-                t_c_verify_link,
-                t_c_inn,
-                t_c_kpp,
-                t_c_k_schet,
-                t_c_r_schet,
-                t_c_bik,
-                t_c_bank_name,
-                t_c_address)
-            VALUES(
-                $1,
-                $2,
-                '{hash_pass}',
-                $3,
-                $4,
-                $5,
-                'link',
-                $6,
-                $7,
-                $8,
-                $9,
-                $10,
-                $11,
-                $12) RETURNING t_id""",
-                                         item.acc_org_name,
-                                         str(item.acc_country),
-                                         item.acc_contact_name,
-                                         item.acc_phone,
-                                         item.acc_email,
-                                         item.acc_inn,
-                                         item.acc_kpp,
-                                         item.acc_k_schet,
-                                         item.acc_r_schet,
-                                         item.acc_bik,
-                                         item.acc_bank_name,
-                                         item.acc_address,
-                                         )
-            return {'temp_id': _temp_id, 'temp_email': item.acc_email}
+            return _dillers
         except Exception as e:
             print(e)
             return
 
     @staticmethod
-    async def verify_registration_with_email(*, temp_id):
+    async def get_companies(admin_login, search: str):
         try:
-            _verify_state = await fetch_row_transaction(
-                """SELECT del_tmp_add_company($1)""",
-                temp_id
+            if search.isdigit():
+                search_from = "c_inn"
+            else:
+                search_from = "c_name"
+            _info = await fetch_transaction(
+                f"""
+                                    with cte as (
+                                    select c_id,
+                                    
+                                    case
+                                    when (select * from (select pt2.permission_id = 1 as tip from admin_table at2
+                                        join privilege_table pt on at2.admin_privilege = pt.privilege_id
+                                        join permission_table pt2 on pt2.permission_id = pt.privilege_type
+                                        where at2.admin_login=$1) s where tip in (true)) then c_unique_id
+                                    else 0
+                                    end as c_unique_id, c_diller_id, c_name, c_contact_name, c_phone, c_email, c_inn, c_address,
+                                    row_number () over(partition by c.c_diller_id order by c.c_diller_id) as numer from company c)
+                                    select c_id,
+                                    c_unique_id,
+                                    c_diller_id,
+                                    c_name,
+                                    c_contact_name,
+                                    c_phone,
+                                    c_email,
+                                    c_inn,
+                                    c_address,
+                                    numer, port
+                                    from cte left join device_port on unique_id_cp = c_unique_id where {search_from} like $2;
+                                    """,
+                admin_login,
+               '%'+ search+'%'
             )
-            return _verify_state
+            return _info
         except Exception as e:
             print(e)
             return
+
     @staticmethod
-    async def get_user_info(language, user_uuid):
-        _user_info = await fetch_row_transaction(
-            """
-            SELECT  c_id,
-                    c_unique_id,
-                    c_name,
-                    c_contact_name,
-                    c_phone,
-                    c_email
-            FROM company
-            WHERE c_id = $1
-            """, user_uuid)
-        _user_info = {
-            'c_id': _user_info['c_id'],
-            'c_unique_id': _user_info['c_unique_id'],
-            'c_name': _user_info['c_name'],
-            'c_contact_name': _user_info['c_contact_name'],
-            'c_phone': _user_info['c_phone'],
-            'c_email': _user_info['c_email'],
+    async def get_company_and_tarif_by_id(company_id):
+        _info = await fetch_transaction("""
+                    select distinct soat.order_id, soat.order_summ, soat.order_date pay_date,
+    soat.cass_stantion_count, soat.mobile_cass_count, soat.mobile_manager_count, soat .web_manager_count,
+    (select curr_name from curr_types where curr_id = soat.order_curr_type) as curr_type,
+    case
+    	when soat.order_state then (select ct.start_license from client_tarif ct where ct.c_t_id = soat.company_id and ct.c_t_tarif_id = soat.tarif_id_fk )
+    	else null
+    end start_license,
+    case
+    	when soat.order_state then (select ct.end_license from client_tarif ct where ct.c_t_id = soat.company_id and ct.c_t_tarif_id = soat.tarif_id_fk )
+    	else null
+    end end_license
+    from saved_order_and_tarif soat
+    left join client_tarif ct on ct.c_t_id = soat.company_id
+    where soat.company_id = $1
+                    """, company_id)
+        return _info
+
+    @staticmethod
+    async def get_used_device_count(company_id):
+        product_id_table = {
+            1: 'cass_stantion_count',
+            2: 'mobile_cass_count',
+            3: 'web_manager_count',
+            4: 'mobile_manager_count'
         }
-        _tariff_info = await fetch_transaction(
+        _devices = await fetch_transaction("""
+                    with cte2 as (
+                    select count(*), l.product_id_fk  from licenses l
+                    where l.unique_id_cp = (select c.c_unique_id  from company c where c.c_id = $1)
+                    group by l.product_id_fk order by l.product_id_fk )
+                    select * from cte2;
+                    """, company_id)
+        return [{product_id_table[i["product_id_fk"]]: i["count"]} for i in _devices]
+
+    @staticmethod
+    async def block_tarif_for_company(order_id, admin_login):
+        _permission = await fetch_row_transaction(
+                """select * from check_permission($1)""",
+                admin_login
+                                        )
+        if _permission["check_permission"] != 1:
+            return
+        await fetch_transaction(
+                """UPDATE saved_order_and_tarif set order_state = false where order_id = $1;""", order_id)
+        return 1
+
+    @staticmethod
+    async def enable_tarif_for_company(order_id, admin_login):
+        _permission = await fetch_row_transaction(
+            """select * from check_permission($1)""",
+            admin_login
+        )
+        if _permission["check_permission"] != 1:
+            return
+        await fetch_transaction(
             """
-            SELECT 
-                      distinct t_id,
-                      t_name[$2],
-                      end_license::date,
-                      true as order_state
-                FROM tarif 
-                join client_tarif ct on ct.c_t_id = $1 and ct.c_t_tarif_id  = t_id
-                where t_id in (select tarif_id_fk from saved_order_and_tarif soat where company_id = $1
-                and for_view=true)
-                union all
-                SELECT 
-                      distinct t_id,
-                      t_name[$2],
-                      null::date,
-                      false as order_state
-                FROM tarif 
-                where t_id in (select tarif_id_fk from saved_order_and_tarif soat where company_id = $1
-                and for_view=true
-                except select c_t_tarif_id  from client_tarif ct2  where c_t_id  = $1)""",
-            user_uuid,
-            language
-        )
-        data = _user_info | {"tarif_list": _tariff_info}
-        print(data)
-        return data
+            UPDATE saved_order_and_tarif set order_state = true where order_id = $1;
+            """, order_id)
+        return 1
 
     @staticmethod
-    async def get_app_links():
-        _links = await fetch_transaction(
-            """SELECT * FROM links order by product_id"""
-        )
-        return _links
+    async def get_payments_for_view(*, order_state: tuple[bool], order_curr_type: tuple):
+        _info = await fetch_transaction("""
+                    select order_id,
+                    c_name, c_contact_name, c_phone, c_email, c_inn, c_address,
+                           order_summ,
+                           cass_stantion_count,
+                           mobile_cass_count,
+                           mobile_manager_count,
+                           web_manager_count,
+                           order_curr_type,
+                           order_date,
+                           order_ending,
+                           order_state
+                    from saved_order_and_tarif soat
+                    join company cp on cp.c_id = soat.company_id
+                    where order_state = ANY($1::bool[])
+                    and order_curr_type = ANY($2::int[])
+                    order by order_date desc
+                    """, order_state, order_curr_type)
+        return _info
 
-    @staticmethod
-    async def update_password(_email, _password):
-        await fetch_row_transaction("""UPDATE company SET c_pass = $1 WHERE c_email = $2""", _password, _email)
-        return True

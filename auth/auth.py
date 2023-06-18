@@ -10,7 +10,7 @@ from passlib.context import CryptContext
 from service.parser import ParseEnv
 
 base_auth = OAuth2PasswordBearer(
-    tokenUrl="api/v1/user/signin",
+    tokenUrl="api/v1/admin/signin",
     scheme_name="JWT"
 )
 
